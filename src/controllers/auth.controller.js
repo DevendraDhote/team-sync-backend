@@ -13,10 +13,14 @@ const registerController = asyncHandler(async (req, res) => {
 
   res.cookie("accessToken", accessToken, {
     httpOnly: true,
+    secure: true,
+    sameSite: "none",
   });
 
   res.cookie("refreshToken", refreshToken, {
     httpOnly: true,
+    secure: true,
+    sameSite: "none",
   });
 
   res
@@ -34,10 +38,14 @@ const loginController = asyncHandler(async (req, res) => {
 
   res.cookie("accessToken", accessToken, {
     httpOnly: true,
+    secure: true,
+    sameSite: "none",
   });
 
   res.cookie("refreshToken", refreshToken, {
     httpOnly: true,
+    secure: true,
+    sameSite: "none",
   });
 
   res.status(200).json(new ApiResponse(200, "Employee loggedIn", employee));
