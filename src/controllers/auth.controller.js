@@ -41,6 +41,7 @@ const loginController = asyncHandler(async (req, res) => {
     secure: false,
     sameSite: "lax",
     path: "/",
+    maxAge: 15 * 60 * 1000,
   });
 
   res.cookie("refreshToken", refreshToken, {
@@ -48,6 +49,7 @@ const loginController = asyncHandler(async (req, res) => {
     secure: false,
     sameSite: "lax",
     path: "/",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 
   res.status(200).json(new ApiResponse(200, "Employee loggedIn", employee));
