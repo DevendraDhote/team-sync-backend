@@ -1,5 +1,6 @@
 let express = require("express");
 let cookieParser = require("cookie-parser");
+let cors = require("cors");
 let authRoutes = require("./routes/auth.routes");
 let employeeRoutes = require("./routes/employee.routes");
 let dashboardRoutes = require("./routes/dashboard.routes");
