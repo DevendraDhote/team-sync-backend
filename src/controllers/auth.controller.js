@@ -62,6 +62,10 @@ const getAccessTokenController = asyncHandler(async (req, res) => {
 
   res.cookie("accessToken", newAccessToken, {
     httpOnly: true,
+    secure: true,
+    sameSite: "none",
+    path: "/",
+    maxAge: 15 * 60 * 1000,
   });
 
   res.status(200).json(new ApiResponse(200, "accessToken generated"));
