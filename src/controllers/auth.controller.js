@@ -49,7 +49,7 @@ const loginController = asyncHandler(async (req, res) => {
     secure: true,
     sameSite: "none",
     path: "/",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    maxAge: 24 * 60 * 60 * 1000,
   });
 
   res.status(200).json(new ApiResponse(200, "Employee loggedIn", employee));
