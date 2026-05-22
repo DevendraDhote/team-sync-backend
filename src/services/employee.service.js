@@ -4,27 +4,54 @@ const ApiError = require("../utils/ApiError");
 let allEmployeeService = async (query) => {
   let page = Number(query.page) || 1;
   let limit = Number(query.limit) || 20;
+
   let skip = (page - 1) * limit;
 
+  // FILTER VALUES
   let search = query.search || "";
+  let role = query.role || "";
+  let department = query.department || "";
+  let status = query.status || "";
 
-  let filter = {
-    name: {
+  // DYNAMIC FILTER OBJECT
+  let filter = {};
+
+  // SEARCH FILTER
+  if (search) {
+    filter.name = {
       $regex: search,
       $options: "i",
-    },
-  };
+    };
+  }
 
+  // ROLE FILTER
+  if (role) {
+    filter.role = role;
+  }
+
+  // DEPARTMENT FILTER
+  if (department) {
+    filter.department = department;
+  }
+
+  // STATUS FILTER
+  if (status) {
+    filter.status = status;
+  }
+
+  // FETCH EMPLOYEES
   let employees = await Employee.find(filter)
     .select("-password")
     .skip(skip)
     .limit(limit)
     .sort({ createdAt: -1 });
 
+  // TOTAL COUNT
   let totalEmployees = await Employee.countDocuments(filter);
 
   return {
     employees,
+
     pagination: {
       total: totalEmployees,
       page,
