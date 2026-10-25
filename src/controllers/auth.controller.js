@@ -2,6 +2,7 @@ const {
   registerService,
   loginService,
   accessTokenService,
+  logoutService,
 } = require("../services/auth.service");
 const ApiResponse = require("../utils/ApiResponse");
 const asyncHandler = require("../utils/asyncHandler");
@@ -71,8 +72,25 @@ const getAccessTokenController = asyncHandler(async (req, res) => {
   res.status(200).json(new ApiResponse(200, "accessToken generated"));
 });
 
+const logoutController = asyncHandler(async (req, res) => {
+  await logoutService(req.cookies.refreshToken);
+
+  const cookieOptions = {
+    httpOnly: true,
+    secure: true,
+    sameSite: "none",
+    path: "/",
+  };
+
+  res.clearCookie("accessToken", cookieOptions);
+  res.clearCookie("refreshToken", cookieOptions);
+
+  res.status(200).json(new ApiResponse(200, "Employee loggedOut"));
+});
+
 module.exports = {
   registerController,
   loginController,
   getAccessTokenController,
+  logoutController,
 };

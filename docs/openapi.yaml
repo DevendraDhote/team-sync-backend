@@ -1,0 +1,2350 @@
+openapi: 3.0.3
+
+info:
+  title: TeamSync CRM API
+  version: 1.0.0
+  description: |
+    REST API for **TeamSync**, a small CRM / team-management backend with employees,
+    tasks, departments and a dashboard. Built with Node.js, Express 5 and MongoDB.
+
+    These docs describe how the backend **currently behaves**. Places where the
+    behaviour is buggy or surprising are marked **⚠️ Known issue** so you can work
+    around them in your frontend.
+
+    ---
+
+    ## Getting Started
+
+    ### 1. Base URL
+
+    | Environment | Base URL |
+    |---|---|
+    | Local | `http://localhost:4000` (or whatever `PORT` is set to in `.env`) |
+    | Deployed | `https://<your-deployed-backend-url>` |
+
+    All API paths start with `/api`, e.g. `http://localhost:4000/api/auth/login`.
+
+    ### 2. How authentication works (cookies, not Bearer tokens)
+
+    This API does **not** use an `Authorization: Bearer <token>` header. Instead:
+
+    1. You call `POST /api/auth/login` (or `POST /api/auth/register`).
+    2. The server answers with two **httpOnly cookies**:
+       - `accessToken`: a JWT, valid for 30 minutes (the cookie itself expires after 15 minutes)
+       - `refreshToken`: a JWT, valid for 7 days (the cookie itself expires after 1 day)
+    3. The browser stores the cookies and **sends them automatically** on every later
+       request, as long as you tell your HTTP client to include credentials.
+    4. When a protected endpoint answers `401`, call `GET /api/auth/get-accessToken`
+       to get a fresh `accessToken` cookie, then retry the request. If that also fails,
+       send the user back to the login page.
+    5. To log out, call `POST /api/auth/logout`. It clears both cookies.
+
+    Because the cookies are `httpOnly`, your JavaScript **cannot read the token**.
+    That's on purpose. You never store it in `localStorage`. Use `GET /api/auth/me`
+    to find out who is logged in.
+
+    ### 3. Sending the cookie from your frontend
+
+    **fetch**
+    ```js
+    const res = await fetch("http://localhost:4000/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",          // REQUIRED: send and receive cookies
+      body: JSON.stringify({ email: "admin@example.com", password: "<ADMIN_PASSWORD>" }),
+    });
+    const body = await res.json();     // body.data is the logged-in employee
+    ```
+
+    **axios**
+    ```js
+    import axios from "axios";
+
+    export const api = axios.create({
+      baseURL: "http://localhost:4000/api",
+      withCredentials: true,           // REQUIRED: send and receive cookies
+    });
+
+    await api.post("/auth/login", { email: "admin@example.com", password: "<ADMIN_PASSWORD>" });
+    const { data } = await api.get("/auth/me");
+    ```
+
+    **Auto-refresh with an axios interceptor**
+    ```js
+    api.interceptors.response.use(
+      (res) => res,
+      async (error) => {
+        const original = error.config;
+        if (error.response?.status === 401 && !original._retry) {
+          original._retry = true;
+          await api.get("/auth/get-accessToken");   // sets a new accessToken cookie
+          return api(original);
+        }
+        return Promise.reject(error);
+      }
+    );
+    ```
+
+    ### 4. CORS: which frontend URLs are allowed
+
+    The backend only accepts browser requests from these origins:
+
+    - `http://localhost:5173` (Vite default)
+    - `http://localhost:3000` (CRA / Next.js default)
+
+    Run your frontend on one of these ports. A request from any other origin fails
+    with a CORS error.
+
+    ### 5. Trying the API from this page
+
+    1. Open **Auth → POST /api/auth/login**, click **Try it out**, enter a test
+       account below, then click **Execute**.
+    2. The browser saves the `accessToken` cookie for this site. Every other
+       **Try it out** request on this page now sends it automatically, so you only
+       log in once.
+    3. When requests start returning `401` (after about 15 minutes), run
+       **GET /api/auth/get-accessToken** or log in again.
+
+    The **Authorize** button lists `cookieAuth` for reference only. Browsers don't let
+    web pages set the `Cookie` header themselves, so typing a token there has no effect.
+    Use the login endpoint instead. Use Chrome or Edge: the login cookies are marked
+    `Secure` + `SameSite=None`, which these browsers accept on `http://localhost`.
+
+    ### 6. Test accounts
+
+    Your instructor will give you the real credentials. Never commit real passwords
+    to your frontend repository.
+
+    | Role | Email | Password | Can do |
+    |---|---|---|---|
+    | admin | `admin@example.com` | `<ADMIN_PASSWORD>` | Everything, including creating, updating and deleting employees, tasks and departments |
+    | employee | `employee@example.com` | `<EMPLOYEE_PASSWORD>` | Read their own tasks, update the status of their own tasks, view the dashboard and departments |
+
+    ### 7. Response format
+
+    **Success** (every endpoint except `GET /api/auth/me`):
+    ```json
+    { "statusCode": 200, "success": true, "message": "Employees fetched successfully", "data": { } }
+    ```
+
+    **Error:**
+    ```json
+    { "success": false, "message": "Access denied. Insufficient permissions" }
+    ```
+
+    Always read `response.data` (axios) or `await res.json()` (fetch), then use the
+    `data` field inside it for the actual payload.
+
+    ### 8. Roles
+
+    | Role | Description |
+    |---|---|
+    | `admin` | Full access. Required for endpoints marked **Roles: admin**. |
+    | `employee` | Default role. List endpoints are automatically limited to the employee's own tasks. |
+
+    ### 9. Global known issues
+
+    - **⚠️ Validation errors return 500, not 400.** There is no request-validation layer.
+      Missing required fields, invalid enum values, malformed IDs and duplicate keys reach the
+      error handler as **500** with the raw Mongoose message, e.g.
+      `Cast to ObjectId failed for value "abc" ...`. Validate inputs in your frontend.
+    - **⚠️ Responses include sensitive fields.** Most employee objects include `refreshToken`,
+      and some also include the bcrypt `password` hash. Never display or store these fields.
+    - **⚠️ Unknown routes** return Express's default HTML 404 page, not JSON.
+
+  contact:
+    name: TeamSync course
+  license:
+    name: ISC
+
+servers:
+  - url: /
+    description: Same server that serves these docs
+  - url: http://localhost:4000
+    description: Local development
+
+tags:
+  - name: Auth
+    description: |
+      Register, log in, refresh the access token and get the current user.
+      Login and register set the `accessToken` and `refreshToken` httpOnly cookies.
+      `POST /api/auth/logout` clears both cookies.
+  - name: Employees
+    description: |
+      Manage employee accounts. Listing, creating, updating and deleting employees
+      requires the **admin** role. An employee belongs to one of a fixed list of
+      `department` names, which is separate from the **Departments** module.
+  - name: Tasks
+    description: |
+      Create, assign, track and delete tasks, plus Kanban and analytics views.
+      For users with the `employee` role, list, Kanban and analytics results only
+      include tasks assigned to them.
+  - name: Dashboard
+    description: Summary numbers and recent tasks for the dashboard home screen.
+  - name: Departments
+    description: |
+      Departments are documents with a name, a manager and a list of employees.
+      Creating departments, assigning employees and analytics require the **admin** role.
+      This collection is separate from the `department` string field on an employee.
+  - name: Health
+    description: Check that the server is running.
+
+security:
+  - cookieAuth: []
+
+paths:
+  /:
+    get:
+      tags: [Health]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: Server is running (plain-text response).
+          content:
+            text/html:
+              schema:
+                type: string
+                example: backend running successfully
+
+  # ───────────────────────────── AUTH ─────────────────────────────
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new employee account
+      description: |
+        Creates an employee and logs them in. The response sets the `accessToken` and
+        `refreshToken` cookies.
+
+        **⚠️ Known issues**
+        - The whole request body is saved, so a client can send `"role": "admin"` and
+          register as an admin. Don't expose a role picker on your sign-up form.
+        - Missing required fields return **500** (Mongoose validation error), not 400.
+        - The duplicate-email check is case-sensitive, but emails are stored in lowercase.
+          `John@x.com` after `john@x.com` returns **500** (duplicate key), not 409.
+        - The register cookies are set without `Secure`/`SameSite=None` and without
+          an expiry, unlike the login cookies.
+        - The response includes the `password` hash and `refreshToken`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+            example:
+              name: Aarav Sharma
+              email: aarav.sharma@example.com
+              password: secret123
+              department: developer
+      responses:
+        "201":
+          description: Employee registered and logged in.
+          headers:
+            Set-Cookie:
+              $ref: "#/components/headers/SetAuthCookies"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/EmployeeWithPassword"
+              example:
+                statusCode: 201
+                success: true
+                message: Employee registered successfully
+                data:
+                  _id: 6650a1f2c3b4d5e6f7a8b9c0
+                  name: Aarav Sharma
+                  email: aarav.sharma@example.com
+                  password: $2b$10$Qe7m3n1kK0bq3sJxv5Yf3uY1vQ7lW1o9yH0Zp3kq6m2JbVq2XzW1C
+                  role: employee
+                  avatar: ""
+                  department: developer
+                  refreshToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                  status: active
+                  createdAt: "2026-05-14T10:00:00.000Z"
+                  updatedAt: "2026-05-14T10:00:00.000Z"
+                  __v: 0
+        "409":
+          description: An employee with this email already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: Employee already exists
+        "500":
+          $ref: "#/components/responses/ValidationServerError"
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in with email and password
+      description: |
+        Checks the credentials and sets the `accessToken` cookie (15-minute cookie, 30-minute JWT)
+        and the `refreshToken` cookie (1-day cookie, 7-day JWT). Both cookies are
+        `HttpOnly; Secure; SameSite=None; Path=/`.
+
+        **Run this first in Swagger UI.** Every other request on this page then uses the cookie.
+
+        **⚠️ Known issues**
+        - An unknown email returns **404** (`employee not found`), not 401.
+        - A missing `email` or `password` returns **500**.
+        - The response includes the `password` hash and `refreshToken`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            examples:
+              admin:
+                summary: Admin test account
+                value:
+                  email: admin@example.com
+                  password: <ADMIN_PASSWORD>
+              employee:
+                summary: Employee test account
+                value:
+                  email: employee@example.com
+                  password: <EMPLOYEE_PASSWORD>
+      responses:
+        "200":
+          description: Logged in. Auth cookies are set.
+          headers:
+            Set-Cookie:
+              $ref: "#/components/headers/SetAuthCookies"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/EmployeeWithPassword"
+              example:
+                statusCode: 200
+                success: true
+                message: Employee loggedIn
+                data:
+                  _id: 6650a1f2c3b4d5e6f7a8b9c0
+                  name: Admin User
+                  email: admin@example.com
+                  password: $2b$10$Qe7m3n1kK0bq3sJxv5Yf3uY1vQ7lW1o9yH0Zp3kq6m2JbVq2XzW1C
+                  role: admin
+                  avatar: ""
+                  department: management
+                  refreshToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                  status: active
+                  createdAt: "2026-05-14T10:00:00.000Z"
+                  updatedAt: "2026-05-14T10:05:00.000Z"
+                  __v: 0
+        "401":
+          description: Wrong password.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: Invalid credentials
+        "404":
+          description: No employee with this email.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: employee not found
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/auth/get-accessToken:
+    get:
+      tags: [Auth]
+      summary: Get a new access token using the refresh cookie
+      description: |
+        Reads the `refreshToken` cookie and sets a new `accessToken` cookie.
+        Call this when another endpoint returns 401, then retry the original request.
+        No request body or header is needed. The browser sends the cookie.
+
+        **⚠️ Known issues**
+        - The refresh token is checked as a valid JWT, but it is **not** compared with the
+          one stored in the database.
+        - An expired or malformed refresh token returns **500** (`jwt expired`,
+          `jwt malformed`), not 401. Treat any non-200 response as "log in again".
+      security:
+        - refreshCookie: []
+      responses:
+        "200":
+          description: New `accessToken` cookie set. `data` is `null`.
+          headers:
+            Set-Cookie:
+              description: "`accessToken=<jwt>; Max-Age=900; Path=/; HttpOnly; Secure; SameSite=None`"
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse"
+              example:
+                statusCode: 200
+                success: true
+                message: accessToken generated
+                data: null
+        "400":
+          description: No `refreshToken` cookie was sent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: refreshToken not found
+        "500":
+          description: Refresh token is expired or invalid, or the employee no longer exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: jwt expired
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Log out
+      description: |
+        Clears the `accessToken` and `refreshToken` cookies, and removes the stored
+        refresh token from the employee in the database.
+
+        No request body is needed. It works even if the access token has already
+        expired, and it always returns 200, even if the user wasn't logged in.
+
+        After logging out, clear any user data in your frontend state and redirect to
+        the login page.
+
+        **⚠️ Known issue:** `GET /api/auth/get-accessToken` doesn't compare the refresh token
+        with the one in the database. A refresh token copied before logout keeps working
+        until it expires (7 days). Browsers that called logout are unaffected, because their
+        cookies are cleared.
+      security: []
+      responses:
+        "200":
+          description: Logged out. Both auth cookies are cleared. `data` is `null`.
+          headers:
+            Set-Cookie:
+              description: |
+                Both cookies are expired:
+                - `accessToken=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=None`
+                - `refreshToken=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=None`
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse"
+              example:
+                statusCode: 200
+                success: true
+                message: Employee loggedOut
+                data: null
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the currently logged-in employee
+      description: |
+        Returns the employee who owns the `accessToken` cookie. Use it on app load
+        to check whether the user is logged in.
+
+        **⚠️ Known issue:** this response does **not** use the standard wrapper.
+        The employee is in `user`, not `data`, and there is no `success` or `statusCode`.
+        The `refreshToken` field is included.
+      responses:
+        "200":
+          description: The logged-in employee.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: loggedIn user
+                  user:
+                    $ref: "#/components/schemas/Employee"
+              example:
+                message: loggedIn user
+                user:
+                  _id: 6650a1f2c3b4d5e6f7a8b9c0
+                  name: Admin User
+                  email: admin@example.com
+                  role: admin
+                  avatar: ""
+                  department: management
+                  refreshToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                  status: active
+                  createdAt: "2026-05-14T10:00:00.000Z"
+                  updatedAt: "2026-05-14T10:05:00.000Z"
+                  __v: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ─────────────────────────── EMPLOYEES ───────────────────────────
+  /api/employee:
+    get:
+      tags: [Employees]
+      summary: List employees (paginated, searchable, filterable)
+      description: |
+        **Roles: admin**
+
+        Returns employees sorted by newest first (`createdAt` descending). There is
+        no `sort` parameter. All filters can be combined.
+
+        **⚠️ Known issues**
+        - `limit` has no maximum.
+        - Each employee includes the `refreshToken` field.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - name: limit
+          in: query
+          description: Items per page.
+          schema:
+            type: integer
+            minimum: 1
+            default: 20
+            example: 10
+        - name: search
+          in: query
+          description: Case-insensitive partial match on `name` only (not email).
+          schema:
+            type: string
+            example: aarav
+        - name: role
+          in: query
+          description: Exact role match.
+          schema:
+            $ref: "#/components/schemas/Role"
+        - name: department
+          in: query
+          description: Exact match on the employee's `department` string.
+          schema:
+            $ref: "#/components/schemas/EmployeeDepartment"
+        - name: status
+          in: query
+          description: Exact status match.
+          schema:
+            $ref: "#/components/schemas/EmployeeStatus"
+      responses:
+        "200":
+          description: A page of employees.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          employees:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/Employee"
+                          pagination:
+                            $ref: "#/components/schemas/Pagination"
+              example:
+                statusCode: 200
+                success: true
+                message: Employees fetched successfully
+                data:
+                  employees:
+                    - _id: 6650a1f2c3b4d5e6f7a8b9c1
+                      name: Aarav Sharma
+                      email: aarav.sharma@example.com
+                      role: employee
+                      avatar: ""
+                      department: developer
+                      refreshToken: ""
+                      status: active
+                      createdAt: "2026-05-14T10:00:00.000Z"
+                      updatedAt: "2026-05-14T10:00:00.000Z"
+                      __v: 0
+                  pagination:
+                    total: 42
+                    page: 1
+                    limit: 10
+                    totalPages: 5
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/employee/{empId}:
+    get:
+      tags: [Employees]
+      summary: Get a single employee by ID
+      description: |
+        **Roles: any logged-in user**
+
+        **⚠️ Known issues**
+        - Any logged-in user can read any employee, not only themselves.
+        - The response includes the `password` hash and `refreshToken`.
+        - An invalid ObjectId returns **500**, not 400.
+      parameters:
+        - $ref: "#/components/parameters/EmpId"
+      responses:
+        "200":
+          description: The employee.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/EmployeeWithPassword"
+              example:
+                statusCode: 200
+                success: true
+                message: Employee fetched successfully
+                data:
+                  _id: 6650a1f2c3b4d5e6f7a8b9c1
+                  name: Aarav Sharma
+                  email: aarav.sharma@example.com
+                  password: $2b$10$Qe7m3n1kK0bq3sJxv5Yf3uY1vQ7lW1o9yH0Zp3kq6m2JbVq2XzW1C
+                  role: employee
+                  avatar: ""
+                  department: developer
+                  refreshToken: ""
+                  status: active
+                  createdAt: "2026-05-14T10:00:00.000Z"
+                  updatedAt: "2026-05-14T10:00:00.000Z"
+                  __v: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No employee with this ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: Employee not exists
+        "500":
+          $ref: "#/components/responses/InvalidIdServerError"
+
+  /api/employee/create:
+    post:
+      tags: [Employees]
+      summary: Create an employee
+      description: |
+        **Roles: admin**
+
+        Creates an employee account. The password is hashed before saving. The new
+        employee is **not** logged in, and no cookies are set.
+
+        **⚠️ Known issues**
+        - Missing required fields or invalid enum values return **500**, not 400.
+        - The response includes the `password` hash.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEmployeeRequest"
+            example:
+              name: Priya Patel
+              email: priya.patel@example.com
+              password: secret123
+              role: employee
+              department: marketing
+              status: active
+      responses:
+        "201":
+          description: Employee created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/EmployeeWithPassword"
+              example:
+                statusCode: 201
+                success: true
+                message: Employee created successfully
+                data:
+                  _id: 6650a1f2c3b4d5e6f7a8b9c2
+                  name: Priya Patel
+                  email: priya.patel@example.com
+                  password: $2b$10$Qe7m3n1kK0bq3sJxv5Yf3uY1vQ7lW1o9yH0Zp3kq6m2JbVq2XzW1C
+                  role: employee
+                  avatar: ""
+                  department: marketing
+                  refreshToken: ""
+                  status: active
+                  createdAt: "2026-05-14T11:00:00.000Z"
+                  updatedAt: "2026-05-14T11:00:00.000Z"
+                  __v: 0
+        "400":
+          description: Request body is missing entirely.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: all fields are required
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Email already in use.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: Employee already exists with this email
+        "500":
+          $ref: "#/components/responses/ValidationServerError"
+
+  /api/employee/upload-profile:
+    post:
+      tags: [Employees]
+      summary: Upload the logged-in employee's avatar
+      description: |
+        **Roles: any logged-in user**
+
+        Send the image as `multipart/form-data` in the field `avatar`. The image is
+        stored on ImageKit, and its URL is saved to the logged-in employee's `avatar`.
+
+        ```js
+        const form = new FormData();
+        form.append("avatar", fileInput.files[0]);
+        await api.post("/employee/upload-profile", form);   // axios sets the multipart header
+        ```
+
+        **⚠️ Known issue:** no file size or type limit is enforced. Check the file in your frontend.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [avatar]
+              properties:
+                avatar:
+                  type: string
+                  format: binary
+                  description: Image file (no size or type limit is enforced).
+      responses:
+        "200":
+          description: Avatar uploaded.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          avatar:
+                            type: string
+                            format: uri
+              example:
+                statusCode: 200
+                success: true
+                message: profile uploaded
+                data:
+                  avatar: https://ik.imagekit.io/your_id/teamSync/avatar_abc123.png
+        "400":
+          description: No file sent in the `avatar` field.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: file is required
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/employee/update/{empId}:
+    patch:
+      tags: [Employees]
+      summary: Update an employee
+      description: |
+        **Roles: admin**
+
+        Send only the fields you want to change. Returns the updated employee
+        (without `password`).
+
+        **⚠️ Known issues**
+        - **Do not send `password` here.** This update skips password hashing, so the
+          password is stored as plain text and the employee can no longer log in.
+        - Enum values (`role`, `department`, `status`) are **not** validated on update.
+          Invalid values are saved as-is.
+        - An invalid ObjectId returns **500**, not 400.
+      parameters:
+        - $ref: "#/components/parameters/EmpId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateEmployeeRequest"
+            example:
+              department: sales
+              status: inactive
+      responses:
+        "200":
+          description: Updated employee.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Employee"
+              example:
+                statusCode: 200
+                success: true
+                message: employee updated
+                data:
+                  _id: 6650a1f2c3b4d5e6f7a8b9c1
+                  name: Aarav Sharma
+                  email: aarav.sharma@example.com
+                  role: employee
+                  avatar: ""
+                  department: sales
+                  refreshToken: ""
+                  status: inactive
+                  createdAt: "2026-05-14T10:00:00.000Z"
+                  updatedAt: "2026-05-15T09:30:00.000Z"
+                  __v: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EmployeeNotFound"
+        "500":
+          $ref: "#/components/responses/InvalidIdServerError"
+
+  /api/employee/delete/{empId}:
+    delete:
+      tags: [Employees]
+      summary: Delete an employee
+      description: |
+        **Roles: admin**
+
+        Permanently deletes the employee. Tasks assigned to them and department
+        memberships are **not** cleaned up.
+      parameters:
+        - $ref: "#/components/parameters/EmpId"
+      responses:
+        "200":
+          description: Employee deleted. `data` is `null`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse"
+              example:
+                statusCode: 200
+                success: true
+                message: employee deleted
+                data: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EmployeeNotFound"
+        "500":
+          $ref: "#/components/responses/InvalidIdServerError"
+
+  # ───────────────────────────── TASKS ─────────────────────────────
+  /api/tasks/create:
+    post:
+      tags: [Tasks]
+      summary: Create a task
+      description: |
+        **Roles: admin**
+
+        `createdBy` is set automatically to the logged-in admin. Any `createdBy` in
+        the body is ignored.
+
+        **⚠️ Known issues**
+        - The server doesn't check that `assignedTo` is an existing employee.
+        - Missing `title`/`assignedTo` or invalid enum values return **500**, not 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+            example:
+              title: Prepare Q3 sales report
+              description: Compile regional numbers and share with management.
+              priority: high
+              status: todo
+              assignedTo: 6650a1f2c3b4d5e6f7a8b9c1
+              dueDate: "2026-11-15T00:00:00.000Z"
+      responses:
+        "201":
+          description: Task created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Task"
+              example:
+                statusCode: 201
+                success: true
+                message: Task created successfully
+                data:
+                  _id: 6651b2e3d4c5b6a7f8e9d0a1
+                  title: Prepare Q3 sales report
+                  description: Compile regional numbers and share with management.
+                  priority: high
+                  status: todo
+                  assignedTo: 6650a1f2c3b4d5e6f7a8b9c1
+                  createdBy: 6650a1f2c3b4d5e6f7a8b9c0
+                  dueDate: "2026-11-15T00:00:00.000Z"
+                  createdAt: "2026-10-25T10:00:00.000Z"
+                  updatedAt: "2026-10-25T10:00:00.000Z"
+                  __v: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ValidationServerError"
+
+  /api/tasks:
+    get:
+      tags: [Tasks]
+      summary: List tasks (paginated, searchable, filterable)
+      description: |
+        **Roles: any logged-in user.** Users with the `employee` role only see tasks
+        assigned to them.
+
+        Sorted by newest first (`createdAt` descending). There is no `sort` parameter.
+        `assignedTo` and `createdBy` are populated.
+
+        **⚠️ Known issue:** if an `employee` sends `assignedTo=<someone else's id>`, that
+        filter replaces the "own tasks only" restriction, so they can see other people's tasks.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - name: limit
+          in: query
+          description: Items per page (no maximum).
+          schema:
+            type: integer
+            minimum: 1
+            default: 10
+            example: 10
+        - name: search
+          in: query
+          description: Case-insensitive partial match on `title`.
+          schema:
+            type: string
+            example: report
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/TaskStatus"
+        - name: priority
+          in: query
+          schema:
+            $ref: "#/components/schemas/TaskPriority"
+        - name: assignedTo
+          in: query
+          description: Employee ID. Only tasks assigned to this employee.
+          schema:
+            $ref: "#/components/schemas/ObjectId"
+      responses:
+        "200":
+          description: A page of tasks.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tasks:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/TaskPopulated"
+                          pagination:
+                            $ref: "#/components/schemas/Pagination"
+              example:
+                statusCode: 200
+                success: true
+                message: Task fetched successfully
+                data:
+                  tasks:
+                    - _id: 6651b2e3d4c5b6a7f8e9d0a1
+                      title: Prepare Q3 sales report
+                      description: Compile regional numbers and share with management.
+                      priority: high
+                      status: in-progress
+                      assignedTo:
+                        _id: 6650a1f2c3b4d5e6f7a8b9c1
+                        name: Aarav Sharma
+                        email: aarav.sharma@example.com
+                        role: employee
+                      createdBy:
+                        _id: 6650a1f2c3b4d5e6f7a8b9c0
+                        name: Admin User
+                        email: admin@example.com
+                      dueDate: "2026-11-15T00:00:00.000Z"
+                      createdAt: "2026-10-25T10:00:00.000Z"
+                      updatedAt: "2026-10-26T08:00:00.000Z"
+                      __v: 0
+                  pagination:
+                    total: 1
+                    page: 1
+                    limit: 10
+                    totalPages: 1
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InvalidIdServerError"
+
+  /api/tasks/kanban:
+    get:
+      tags: [Tasks]
+      summary: Get tasks grouped for a Kanban board
+      description: |
+        **Roles: any logged-in user.** Users with the `employee` role only see their own tasks.
+
+        Returns **all** matching tasks (no pagination), grouped into three columns.
+        `assignedTo` is populated with `name` and `email`.
+      responses:
+        "200":
+          description: Kanban columns.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/KanbanBoard"
+              example:
+                statusCode: 200
+                success: true
+                message: Kanban tasks fetched
+                data:
+                  todo:
+                    - _id: 6651b2e3d4c5b6a7f8e9d0a2
+                      title: Design onboarding email
+                      description: ""
+                      priority: medium
+                      status: todo
+                      assignedTo:
+                        _id: 6650a1f2c3b4d5e6f7a8b9c2
+                        name: Priya Patel
+                        email: priya.patel@example.com
+                      createdBy: 6650a1f2c3b4d5e6f7a8b9c0
+                      createdAt: "2026-10-25T10:00:00.000Z"
+                      updatedAt: "2026-10-25T10:00:00.000Z"
+                      __v: 0
+                  inProgress: []
+                  completed: []
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/tasks/analytics:
+    get:
+      tags: [Tasks]
+      summary: Get task counts for charts
+      description: |
+        **Roles: any logged-in user.** Users with the `employee` role only get counts for their own tasks.
+
+        Every field is an **array** (MongoDB `$facet` output). A count array is
+        **empty** when the count is 0, so read it like this:
+        `const total = data.totalTasks[0]?.count ?? 0`.
+        In `tasksByStatus` and `tasksByPriority`, `_id` holds the status or priority value.
+      responses:
+        "200":
+          description: Task analytics.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TaskAnalytics"
+              example:
+                statusCode: 200
+                success: true
+                message: Task analytics fetched successfully
+                data:
+                  totalTasks:
+                    - count: 12
+                  tasksByStatus:
+                    - _id: todo
+                      count: 5
+                    - _id: in-progress
+                      count: 4
+                    - _id: completed
+                      count: 3
+                  tasksByPriority:
+                    - _id: high
+                      count: 3
+                    - _id: medium
+                      count: 6
+                    - _id: low
+                      count: 3
+                  completedTasks:
+                    - count: 3
+                  pendingTasks:
+                    - count: 9
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/tasks/{taskId}:
+    get:
+      tags: [Tasks]
+      summary: Get a single task by ID
+      description: |
+        **Roles: any logged-in user**
+
+        `assignedTo` and `createdBy` are plain IDs here (not populated).
+
+        **⚠️ Known issues**
+        - A task that doesn't exist returns **200 with `data: null`**, not 404. Check for `null`.
+        - There's no ownership check: any logged-in user can read any task.
+        - An invalid ObjectId returns **500**.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: The task, or `null` if it doesn't exist.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: "#/components/schemas/Task"
+                        nullable: true
+              examples:
+                found:
+                  summary: Task exists
+                  value:
+                    statusCode: 200
+                    success: true
+                    message: Task fetched successfully
+                    data:
+                      _id: 6651b2e3d4c5b6a7f8e9d0a1
+                      title: Prepare Q3 sales report
+                      description: Compile regional numbers and share with management.
+                      priority: high
+                      status: todo
+                      assignedTo: 6650a1f2c3b4d5e6f7a8b9c1
+                      createdBy: 6650a1f2c3b4d5e6f7a8b9c0
+                      dueDate: "2026-11-15T00:00:00.000Z"
+                      createdAt: "2026-10-25T10:00:00.000Z"
+                      updatedAt: "2026-10-25T10:00:00.000Z"
+                      __v: 0
+                notFound:
+                  summary: Task does not exist (still 200)
+                  value:
+                    statusCode: 200
+                    success: true
+                    message: Task fetched successfully
+                    data: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InvalidIdServerError"
+
+  /api/tasks/status/{taskId}:
+    patch:
+      tags: [Tasks]
+      summary: Update a task's status
+      description: |
+        **Roles: any logged-in user.** Users with the `employee` role can only update tasks assigned to them.
+
+        Use this for Kanban drag-and-drop.
+
+        **⚠️ Known issue:** an invalid `status` value returns **500** (validation error), not 400.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTaskStatusRequest"
+            example:
+              status: in-progress
+      responses:
+        "200":
+          description: Updated task.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Task"
+              example:
+                statusCode: 200
+                success: true
+                message: Task status updated successfully
+                data:
+                  _id: 6651b2e3d4c5b6a7f8e9d0a1
+                  title: Prepare Q3 sales report
+                  description: Compile regional numbers and share with management.
+                  priority: high
+                  status: in-progress
+                  assignedTo: 6650a1f2c3b4d5e6f7a8b9c1
+                  createdBy: 6650a1f2c3b4d5e6f7a8b9c0
+                  dueDate: "2026-11-15T00:00:00.000Z"
+                  createdAt: "2026-10-25T10:00:00.000Z"
+                  updatedAt: "2026-10-26T08:00:00.000Z"
+                  __v: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: An `employee` tried to update a task that isn't assigned to them.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: you can only update your assigned tasks
+        "404":
+          $ref: "#/components/responses/TaskNotFound"
+        "500":
+          $ref: "#/components/responses/ValidationServerError"
+
+  /api/tasks/assign/{taskId}:
+    patch:
+      tags: [Tasks]
+      summary: Assign a task to an employee
+      description: |
+        **Roles: admin**
+
+        Replaces the task's `assignedTo`.
+
+        **⚠️ Known issue:** the server doesn't check that `assignedTo` is an existing employee.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignTaskRequest"
+            example:
+              assignedTo: 6650a1f2c3b4d5e6f7a8b9c2
+      responses:
+        "200":
+          description: Updated task.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Task"
+              example:
+                statusCode: 200
+                success: true
+                message: Task assigned successfully
+                data:
+                  _id: 6651b2e3d4c5b6a7f8e9d0a1
+                  title: Prepare Q3 sales report
+                  description: Compile regional numbers and share with management.
+                  priority: high
+                  status: todo
+                  assignedTo: 6650a1f2c3b4d5e6f7a8b9c2
+                  createdBy: 6650a1f2c3b4d5e6f7a8b9c0
+                  dueDate: "2026-11-15T00:00:00.000Z"
+                  createdAt: "2026-10-25T10:00:00.000Z"
+                  updatedAt: "2026-10-26T09:00:00.000Z"
+                  __v: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/TaskNotFound"
+        "500":
+          $ref: "#/components/responses/ValidationServerError"
+
+  /api/tasks/delete/{taskId}:
+    delete:
+      tags: [Tasks]
+      summary: Delete a task
+      description: |
+        **Roles: any logged-in user** (see known issue)
+
+        **⚠️ Known issues**
+        - There's no role or ownership check: **any** logged-in user can delete **any** task.
+          Hide the delete button from non-admins in your UI.
+        - Always returns 200, even if the task doesn't exist.
+        - An invalid ObjectId returns **500**.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: Task deleted (or didn't exist). `data` is `null`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse"
+              example:
+                statusCode: 200
+                success: true
+                message: Task deleted successfully
+                data: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InvalidIdServerError"
+
+  # ─────────────────────────── DASHBOARD ───────────────────────────
+  /api/dashboard/stats:
+    get:
+      tags: [Dashboard]
+      summary: Get dashboard summary numbers
+      description: |
+        **Roles: any logged-in user.** For users with the `employee` role, task counts and
+        `recentTasks` only include their own tasks.
+
+        `recentTasks` holds the 5 newest tasks, with `assignedTo` populated with `name` and `email`.
+
+        **⚠️ Known issue:** `totalEmployees` actually returns the **total number of tasks**
+        (all tasks, for every role), not the number of employees. To show an employee count,
+        use `pagination.total` from `GET /api/employee` (admin only).
+      responses:
+        "200":
+          description: Dashboard stats.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/DashboardStats"
+              example:
+                statusCode: 200
+                success: true
+                message: Dashboard stats fetched
+                data:
+                  totalEmployees: 12
+                  totalTasks: 12
+                  completedTask: 3
+                  pendingTask: 9
+                  recentTasks:
+                    - _id: 6651b2e3d4c5b6a7f8e9d0a1
+                      title: Prepare Q3 sales report
+                      description: Compile regional numbers and share with management.
+                      priority: high
+                      status: todo
+                      assignedTo:
+                        _id: 6650a1f2c3b4d5e6f7a8b9c1
+                        name: Aarav Sharma
+                        email: aarav.sharma@example.com
+                      createdBy: 6650a1f2c3b4d5e6f7a8b9c0
+                      dueDate: "2026-11-15T00:00:00.000Z"
+                      createdAt: "2026-10-25T10:00:00.000Z"
+                      updatedAt: "2026-10-25T10:00:00.000Z"
+                      __v: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  # ────────────────────────── DEPARTMENTS ──────────────────────────
+  /api/departments/create:
+    post:
+      tags: [Departments]
+      summary: Create a department
+      description: |
+        **Roles: admin**
+
+        **⚠️ Known issues**
+        - The server doesn't check that `manager` and `employees` are existing employee IDs.
+        - A missing `name` returns **500**, not 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDepartmentRequest"
+            example:
+              name: Engineering
+              description: Builds and maintains the TeamSync product.
+              manager: 6650a1f2c3b4d5e6f7a8b9c0
+              employees:
+                - 6650a1f2c3b4d5e6f7a8b9c1
+                - 6650a1f2c3b4d5e6f7a8b9c2
+      responses:
+        "201":
+          description: Department created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Department"
+              example:
+                statusCode: 201
+                success: true
+                message: Department created successfully
+                data:
+                  _id: 6652c3f4e5d6c7b8a9f0e1b2
+                  name: Engineering
+                  description: Builds and maintains the TeamSync product.
+                  manager: 6650a1f2c3b4d5e6f7a8b9c0
+                  employees:
+                    - 6650a1f2c3b4d5e6f7a8b9c1
+                    - 6650a1f2c3b4d5e6f7a8b9c2
+                  createdAt: "2026-10-25T10:00:00.000Z"
+                  updatedAt: "2026-10-25T10:00:00.000Z"
+                  __v: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: A department with this name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: department already exists
+        "500":
+          $ref: "#/components/responses/ValidationServerError"
+
+  /api/departments:
+    get:
+      tags: [Departments]
+      summary: List all departments
+      description: |
+        **Roles: any logged-in user**
+
+        Returns every department (no pagination), newest first. `manager` is populated
+        with `name` and `email`; `employees` with `name`, `email` and `role`.
+      responses:
+        "200":
+          description: All departments.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/DepartmentPopulated"
+              example:
+                statusCode: 200
+                success: true
+                message: Department fetched successfully
+                data:
+                  - _id: 6652c3f4e5d6c7b8a9f0e1b2
+                    name: Engineering
+                    description: Builds and maintains the TeamSync product.
+                    manager:
+                      _id: 6650a1f2c3b4d5e6f7a8b9c0
+                      name: Admin User
+                      email: admin@example.com
+                    employees:
+                      - _id: 6650a1f2c3b4d5e6f7a8b9c1
+                        name: Aarav Sharma
+                        email: aarav.sharma@example.com
+                        role: employee
+                    createdAt: "2026-10-25T10:00:00.000Z"
+                    updatedAt: "2026-10-25T10:00:00.000Z"
+                    __v: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /api/departments/assign/{id}:
+    patch:
+      tags: [Departments]
+      summary: Add employees to a department
+      description: |
+        **Roles: admin**
+
+        Adds the given employee IDs to the department's `employees`. IDs that are
+        already there are not added twice, and existing members are kept.
+        Returns the department with **unpopulated** IDs.
+
+        **⚠️ Known issues**
+        - The success message says `Employee assigned to task`, but it's a department.
+        - The employee's own `department` string field is **not** updated.
+        - The server doesn't check that the IDs are existing employees. A missing or
+          non-array `employees` returns **500**.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Department ID.
+          schema:
+            $ref: "#/components/schemas/ObjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignEmployeesRequest"
+            example:
+              employees:
+                - 6650a1f2c3b4d5e6f7a8b9c3
+                - 6650a1f2c3b4d5e6f7a8b9c4
+      responses:
+        "200":
+          description: Updated department.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Department"
+              example:
+                statusCode: 200
+                success: true
+                message: Employee assigned to task
+                data:
+                  _id: 6652c3f4e5d6c7b8a9f0e1b2
+                  name: Engineering
+                  description: Builds and maintains the TeamSync product.
+                  manager: 6650a1f2c3b4d5e6f7a8b9c0
+                  employees:
+                    - 6650a1f2c3b4d5e6f7a8b9c1
+                    - 6650a1f2c3b4d5e6f7a8b9c2
+                    - 6650a1f2c3b4d5e6f7a8b9c3
+                    - 6650a1f2c3b4d5e6f7a8b9c4
+                  createdAt: "2026-10-25T10:00:00.000Z"
+                  updatedAt: "2026-10-26T10:00:00.000Z"
+                  __v: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: No department with this ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: Department not found
+        "500":
+          $ref: "#/components/responses/InvalidIdServerError"
+
+  /api/departments/analytics:
+    get:
+      tags: [Departments]
+      summary: Get employee count and manager per department
+      description: |
+        **Roles: admin**
+
+        Returns one entry per department. `manager` is left out when the department
+        has no manager.
+      responses:
+        "200":
+          description: Department analytics.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/DepartmentAnalytics"
+              example:
+                statusCode: 200
+                success: true
+                message: Department analytics fetched successfully
+                data:
+                  - _id: 6652c3f4e5d6c7b8a9f0e1b2
+                    name: Engineering
+                    description: Builds and maintains the TeamSync product.
+                    totalEmployees: 4
+                    manager:
+                      name: Admin User
+                      email: admin@example.com
+                  - _id: 6652c3f4e5d6c7b8a9f0e1b3
+                    name: Sales
+                    description: ""
+                    totalEmployees: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: accessToken
+      description: |
+        httpOnly JWT cookie set by `POST /api/auth/login` or `POST /api/auth/register`.
+        The browser sends it automatically. **Typing a value here has no effect in the browser.**
+        Log in through the login endpoint instead.
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: refreshToken
+      description: httpOnly refresh-token cookie set at login. Used only by `GET /api/auth/get-accessToken`.
+
+  headers:
+    SetAuthCookies:
+      description: |
+        Two cookies are set:
+        - `accessToken=<jwt>; Max-Age=900; Path=/; HttpOnly; Secure; SameSite=None`
+        - `refreshToken=<jwt>; Max-Age=86400; Path=/; HttpOnly; Secure; SameSite=None`
+
+        (Register sets the same two cookies with `HttpOnly; SameSite=Lax` and no `Max-Age`.)
+      schema:
+        type: string
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: Page number, starting at 1.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+        example: 1
+    EmpId:
+      name: empId
+      in: path
+      required: true
+      description: Employee ID (MongoDB ObjectId).
+      schema:
+        $ref: "#/components/schemas/ObjectId"
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      description: Task ID (MongoDB ObjectId).
+      schema:
+        $ref: "#/components/schemas/ObjectId"
+
+  responses:
+    Unauthorized:
+      description: |
+        Not logged in, or the access token is expired or invalid. Call
+        `GET /api/auth/get-accessToken`, then retry, or send the user to the login page.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            noCookie:
+              summary: No accessToken cookie
+              value:
+                success: false
+                message: Access token not found
+            invalid:
+              summary: Expired or tampered token
+              value:
+                success: false
+                message: Invalid access token
+            deleted:
+              summary: Employee in the token no longer exists
+              value:
+                success: false
+                message: Employee not found
+    Forbidden:
+      description: Logged in, but the user's role isn't allowed to use this endpoint (admin only).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            message: Access denied. Insufficient permissions
+    EmployeeNotFound:
+      description: No employee with this ID.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            message: Employee not found
+    TaskNotFound:
+      description: No task with this ID.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            message: Task not found
+    ServerError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            message: Internal server error
+    ValidationServerError:
+      description: |
+        **⚠️ Known issue:** validation failures and duplicate keys come back as **500**
+        with the raw Mongoose message (there is no 400 validation layer).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            missingField:
+              summary: Required field missing
+              value:
+                success: false
+                message: "employees validation failed: name: Path `name` is required."
+            invalidEnum:
+              summary: Invalid enum value
+              value:
+                success: false
+                message: "tasks validation failed: status: `done` is not a valid enum value for path `status`."
+            duplicateKey:
+              summary: Duplicate unique field
+              value:
+                success: false
+                message: 'E11000 duplicate key error collection: test.employees index: email_1 dup key: { email: "aarav.sharma@example.com" }'
+            internal:
+              summary: Other server error
+              value:
+                success: false
+                message: Internal server error
+    InvalidIdServerError:
+      description: |
+        **⚠️ Known issue:** a malformed ObjectId in the URL or query comes back as **500**, not 400.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            badId:
+              summary: Malformed ID
+              value:
+                success: false
+                message: 'Cast to ObjectId failed for value "abc" (type string) at path "_id" for model "employees"'
+            internal:
+              summary: Other server error
+              value:
+                success: false
+                message: Internal server error
+
+  schemas:
+    ObjectId:
+      type: string
+      pattern: "^[a-fA-F0-9]{24}$"
+      description: 24-character hexadecimal MongoDB ObjectId.
+      example: 6650a1f2c3b4d5e6f7a8b9c1
+
+    Role:
+      type: string
+      enum: [admin, employee]
+      example: employee
+
+    EmployeeDepartment:
+      type: string
+      enum: [sales, marketing, hr, developer, administrative, common, security, management]
+      example: developer
+
+    EmployeeStatus:
+      type: string
+      enum: [active, inactive]
+      example: active
+
+    TaskStatus:
+      type: string
+      enum: [todo, in-progress, completed]
+      example: todo
+
+    TaskPriority:
+      type: string
+      enum: [low, medium, high]
+      example: medium
+
+    ApiResponse:
+      type: object
+      description: Standard success wrapper. The payload is in `data`.
+      required: [statusCode, success, message]
+      properties:
+        statusCode:
+          type: integer
+          example: 200
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: Request successful
+        data:
+          nullable: true
+          description: The payload (object, array or `null`).
+
+    ErrorResponse:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: Something went wrong
+
+    Pagination:
+      type: object
+      properties:
+        total:
+          type: integer
+          description: Total matching items across all pages.
+          example: 42
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 10
+        totalPages:
+          type: integer
+          example: 5
+
+    Employee:
+      type: object
+      description: |
+        An employee (user) account. `password` is never included here, but
+        **⚠️ `refreshToken` is**. Don't display or store it.
+      properties:
+        _id:
+          $ref: "#/components/schemas/ObjectId"
+        name:
+          type: string
+          example: Aarav Sharma
+        email:
+          type: string
+          format: email
+          description: Stored in lowercase.
+          example: aarav.sharma@example.com
+        role:
+          $ref: "#/components/schemas/Role"
+        avatar:
+          type: string
+          description: Avatar image URL, or an empty string.
+          example: ""
+        department:
+          $ref: "#/components/schemas/EmployeeDepartment"
+        refreshToken:
+          type: string
+          description: "⚠️ Leaked internal field. Ignore it."
+          example: ""
+        status:
+          $ref: "#/components/schemas/EmployeeStatus"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        __v:
+          type: integer
+          example: 0
+
+    EmployeeWithPassword:
+      description: "Employee as returned by login, register, create and get-by-ID. **⚠️ Includes the bcrypt `password` hash.**"
+      allOf:
+        - $ref: "#/components/schemas/Employee"
+        - type: object
+          properties:
+            password:
+              type: string
+              description: "⚠️ bcrypt hash. Never display or store it."
+              example: $2b$10$Qe7m3n1kK0bq3sJxv5Yf3uY1vQ7lW1o9yH0Zp3kq6m2JbVq2XzW1C
+
+    EmployeeRef:
+      type: object
+      description: Populated employee reference.
+      properties:
+        _id:
+          $ref: "#/components/schemas/ObjectId"
+        name:
+          type: string
+          example: Aarav Sharma
+        email:
+          type: string
+          format: email
+          example: aarav.sharma@example.com
+
+    EmployeeRefWithRole:
+      allOf:
+        - $ref: "#/components/schemas/EmployeeRef"
+        - type: object
+          properties:
+            role:
+              $ref: "#/components/schemas/Role"
+
+    RegisterRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+          description: Leading and trailing spaces are trimmed.
+          example: Aarav Sharma
+        email:
+          type: string
+          format: email
+          description: Must be unique. Stored in lowercase.
+          example: aarav.sharma@example.com
+        password:
+          type: string
+          format: password
+          minLength: 6
+          example: secret123
+        department:
+          $ref: "#/components/schemas/EmployeeDepartment"
+        role:
+          allOf:
+            - $ref: "#/components/schemas/Role"
+          description: "Defaults to `employee`. ⚠️ The server accepts `admin` here too. Don't send this field from a public sign-up form."
+        avatar:
+          type: string
+          example: ""
+        status:
+          $ref: "#/components/schemas/EmployeeStatus"
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          description: Case-sensitive lookup. Send it in lowercase.
+          example: admin@example.com
+        password:
+          type: string
+          format: password
+          example: <ADMIN_PASSWORD>
+
+    CreateEmployeeRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+          example: Priya Patel
+        email:
+          type: string
+          format: email
+          description: Must be unique.
+          example: priya.patel@example.com
+        password:
+          type: string
+          format: password
+          minLength: 6
+          example: secret123
+        role:
+          allOf:
+            - $ref: "#/components/schemas/Role"
+          default: employee
+        department:
+          allOf:
+            - $ref: "#/components/schemas/EmployeeDepartment"
+          default: common
+        status:
+          allOf:
+            - $ref: "#/components/schemas/EmployeeStatus"
+          default: active
+        avatar:
+          type: string
+          default: ""
+
+    UpdateEmployeeRequest:
+      type: object
+      description: "All fields optional. ⚠️ Don't send `password` (it would be saved as plain text). Enum values are not validated on update."
+      properties:
+        name:
+          type: string
+          example: Aarav S.
+        email:
+          type: string
+          format: email
+          example: aarav.s@example.com
+        role:
+          $ref: "#/components/schemas/Role"
+        department:
+          $ref: "#/components/schemas/EmployeeDepartment"
+        status:
+          $ref: "#/components/schemas/EmployeeStatus"
+        avatar:
+          type: string
+
+    Task:
+      type: object
+      properties:
+        _id:
+          $ref: "#/components/schemas/ObjectId"
+        title:
+          type: string
+          example: Prepare Q3 sales report
+        description:
+          type: string
+          example: Compile regional numbers and share with management.
+        priority:
+          $ref: "#/components/schemas/TaskPriority"
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        assignedTo:
+          $ref: "#/components/schemas/ObjectId"
+        createdBy:
+          $ref: "#/components/schemas/ObjectId"
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        __v:
+          type: integer
+          example: 0
+
+    TaskPopulated:
+      description: "Task with `assignedTo` (name, email, role) and `createdBy` (name, email) populated, as returned by `GET /api/tasks`."
+      allOf:
+        - $ref: "#/components/schemas/Task"
+        - type: object
+          properties:
+            assignedTo:
+              $ref: "#/components/schemas/EmployeeRefWithRole"
+            createdBy:
+              $ref: "#/components/schemas/EmployeeRef"
+
+    TaskWithAssignee:
+      description: "Task with only `assignedTo` populated (name, email). Used by Kanban and dashboard."
+      allOf:
+        - $ref: "#/components/schemas/Task"
+        - type: object
+          properties:
+            assignedTo:
+              $ref: "#/components/schemas/EmployeeRef"
+
+    CreateTaskRequest:
+      type: object
+      required: [title, assignedTo]
+      properties:
+        title:
+          type: string
+          description: Leading and trailing spaces are trimmed.
+          example: Prepare Q3 sales report
+        description:
+          type: string
+          default: ""
+          example: Compile regional numbers and share with management.
+        priority:
+          allOf:
+            - $ref: "#/components/schemas/TaskPriority"
+          default: medium
+        status:
+          allOf:
+            - $ref: "#/components/schemas/TaskStatus"
+          default: todo
+        assignedTo:
+          allOf:
+            - $ref: "#/components/schemas/ObjectId"
+          description: Employee ID.
+        dueDate:
+          type: string
+          format: date-time
+          example: "2026-11-15T00:00:00.000Z"
+
+    UpdateTaskStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+
+    AssignTaskRequest:
+      type: object
+      required: [assignedTo]
+      properties:
+        assignedTo:
+          allOf:
+            - $ref: "#/components/schemas/ObjectId"
+          description: Employee ID to assign the task to.
+
+    KanbanBoard:
+      type: object
+      properties:
+        todo:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskWithAssignee"
+        inProgress:
+          type: array
+          description: Tasks with status `in-progress`.
+          items:
+            $ref: "#/components/schemas/TaskWithAssignee"
+        completed:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskWithAssignee"
+
+    CountBucket:
+      type: object
+      properties:
+        count:
+          type: integer
+          example: 12
+
+    GroupBucket:
+      type: object
+      properties:
+        _id:
+          type: string
+          description: The status or priority value.
+          example: todo
+        count:
+          type: integer
+          example: 5
+
+    TaskAnalytics:
+      type: object
+      description: "Every field is an array. Count arrays are empty when the count is 0."
+      properties:
+        totalTasks:
+          type: array
+          maxItems: 1
+          items:
+            $ref: "#/components/schemas/CountBucket"
+        tasksByStatus:
+          type: array
+          items:
+            $ref: "#/components/schemas/GroupBucket"
+        tasksByPriority:
+          type: array
+          items:
+            $ref: "#/components/schemas/GroupBucket"
+        completedTasks:
+          type: array
+          maxItems: 1
+          items:
+            $ref: "#/components/schemas/CountBucket"
+        pendingTasks:
+          type: array
+          maxItems: 1
+          items:
+            $ref: "#/components/schemas/CountBucket"
+
+    DashboardStats:
+      type: object
+      properties:
+        totalEmployees:
+          type: integer
+          description: "⚠️ Actually the total number of **tasks** (all tasks, for every role), not employees."
+          example: 12
+        totalTasks:
+          type: integer
+          example: 12
+        completedTask:
+          type: integer
+          example: 3
+        pendingTask:
+          type: integer
+          description: Tasks whose status isn't `completed`.
+          example: 9
+        recentTasks:
+          type: array
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/TaskWithAssignee"
+
+    Department:
+      type: object
+      properties:
+        _id:
+          $ref: "#/components/schemas/ObjectId"
+        name:
+          type: string
+          description: Unique.
+          example: Engineering
+        description:
+          type: string
+          example: Builds and maintains the TeamSync product.
+        manager:
+          $ref: "#/components/schemas/ObjectId"
+        employees:
+          type: array
+          items:
+            $ref: "#/components/schemas/ObjectId"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        __v:
+          type: integer
+          example: 0
+
+    DepartmentPopulated:
+      allOf:
+        - $ref: "#/components/schemas/Department"
+        - type: object
+          properties:
+            manager:
+              allOf:
+                - $ref: "#/components/schemas/EmployeeRef"
+              nullable: true
+            employees:
+              type: array
+              items:
+                $ref: "#/components/schemas/EmployeeRefWithRole"
+
+    CreateDepartmentRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Must be unique. Leading and trailing spaces are trimmed.
+          example: Engineering
+        description:
+          type: string
+          default: ""
+          example: Builds and maintains the TeamSync product.
+        manager:
+          allOf:
+            - $ref: "#/components/schemas/ObjectId"
+          description: Employee ID of the department manager.
+        employees:
+          type: array
+          description: Employee IDs.
+          items:
+            $ref: "#/components/schemas/ObjectId"
+
+    AssignEmployeesRequest:
+      type: object
+      required: [employees]
+      properties:
+        employees:
+          type: array
+          minItems: 1
+          description: Employee IDs to add. Duplicates are ignored.
+          items:
+            $ref: "#/components/schemas/ObjectId"
+
+    DepartmentAnalytics:
+      type: object
+      properties:
+        _id:
+          $ref: "#/components/schemas/ObjectId"
+        name:
+          type: string
+          example: Engineering
+        description:
+          type: string
+          example: Builds and maintains the TeamSync product.
+        totalEmployees:
+          type: integer
+          example: 4
+        manager:
+          type: object
+          description: Left out when the department has no manager.
+          properties:
+            name:
+              type: string
+              example: Admin User
+            email:
+              type: string
+              format: email
+              example: admin@example.com

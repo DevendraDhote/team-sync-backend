@@ -14,7 +14,7 @@ router.post(
   "/create",
   authMiddleware,
   roleMiddleware("admin"),
-  createDepartmentController
+  createDepartmentController,
 );
 
 router.get("/", authMiddleware, getDepartmentsController);
@@ -23,14 +23,14 @@ router.patch(
   "/assign/:id",
   authMiddleware,
   roleMiddleware("admin"),
-  assignEmployeesController
+  assignEmployeesController,
 );
 
 router.get(
   "/analytics",
   authMiddleware,
   roleMiddleware("admin"),
-  getDepartmentAnalyticsController
+  getDepartmentAnalyticsController,
 );
 
 module.exports = router;

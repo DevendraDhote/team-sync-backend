@@ -38,7 +38,7 @@ router.post(
 );
 
 router.post(
-  "upload-profile",
+  "/upload-profile",
   authMiddleware,
   upload.single("avatar"),
   uploadProfileController

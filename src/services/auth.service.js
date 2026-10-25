@@ -74,8 +74,17 @@ const accessTokenService = async (refreshToken) => {
   };
 };
 
+const logoutService = async (refreshToken) => {
+  if (!refreshToken) return null;
+
+  await Employee.findOneAndUpdate({ refreshToken }, { refreshToken: "" });
+
+  return null;
+};
+
 module.exports = {
   registerService,
   loginService,
   accessTokenService,
+  logoutService,
 };
