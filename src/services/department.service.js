@@ -1,6 +1,5 @@
 const Department = require("../models/department.model");
 const ApiError = require("../utils/ApiError");
-import { ObjectId } from "mongodb";
 
 const createDepartmentService = async (data) => {
   let { description, manager, name, employees } = data;
