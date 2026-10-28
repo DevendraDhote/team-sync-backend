@@ -23,7 +23,7 @@ app.use(
   cors({
     origin: function (origin, callback) {
       const allowedOrigins = [
-        "https://fe.team-sync.space",
+        "lionfish-app-rtjuy.ondigitalocean.app",
         "http://localhost:5173",
         "http://localhost:3000", // your production frontend
       ];
@@ -36,7 +36,7 @@ app.use(
     credentials: true, // ← CRITICAL for cookies
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  })
+  }),
 );
 
 app.get("/", (req, res) => {
@@ -45,13 +45,13 @@ app.get("/", (req, res) => {
 
 // API docs
 app.get("/api-reference", (req, res) =>
-  res.sendFile(path.join(__dirname, "../docs/api-reference.html"))
+  res.sendFile(path.join(__dirname, "../docs/api-reference.html")),
 );
 app.get("/api-docs/openapi.json", (req, res) => res.json(swaggerSpec));
 app.use(
   "/api-docs",
   swaggerUi.serve,
-  swaggerUi.setup(swaggerSpec, swaggerUiOptions)
+  swaggerUi.setup(swaggerSpec, swaggerUiOptions),
 );
 
 app.use("/api/auth", authRoutes);
