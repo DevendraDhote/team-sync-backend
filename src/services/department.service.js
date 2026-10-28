@@ -1,10 +1,22 @@
 const Department = require("../models/department.model");
 const ApiError = require("../utils/ApiError");
+import { ObjectId } from "mongodb";
 
 const createDepartmentService = async (data) => {
+  let { description, manager, name, employees } = data;
+
+  let employeeIdAsObjectId = employees.map(
+    (val) => new mongoose.Types.ObjectId(val),
+  );
+
   let existingDepartment = await Department.findOne({ name: data.name });
   if (existingDepartment) throw new ApiError(409, "department already exists");
-  let department = await Department.create(data);
+  let department = await Department.create({
+    manager,
+    name,
+    description,
+    employees: employeeIdAsObjectId,
+  });
 
   return department;
 };
@@ -30,7 +42,7 @@ const assignEmployeesService = async (departmentId, employees) => {
     },
     {
       new: true,
-    }
+    },
   );
 
   if (!department) throw new ApiError(404, "Department not found");

@@ -23,6 +23,7 @@ app.use(
   cors({
     origin: function (origin, callback) {
       const allowedOrigins = [
+        "https://fe.team-sync.space",
         "http://localhost:5173",
         "http://localhost:3000", // your production frontend
       ];
